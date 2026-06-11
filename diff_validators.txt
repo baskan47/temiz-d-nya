@@ -1,0 +1,30 @@
+diff --git a/temiz-dunya/flutter/lib/form_validators.dart b/temiz-dunya/flutter/lib/form_validators.dart
+index 7e38856..ff2358a 100644
+--- a/temiz-dunya/flutter/lib/form_validators.dart
++++ b/temiz-dunya/flutter/lib/form_validators.dart
+@@ -262,22 +262,20 @@ class FormValidators {
+ 
+ /// Get password strength indicator
+ /// Returns: 'weak', 'medium', or 'strong'
+-String getPasswordStrength(String password) {
+-  if (password.isEmpty) return 'weak';
++String getPasswordStrength(String? password) {
++  if (password == null || password.isEmpty) return 'weak';
+ 
+   int strength = 0;
+ 
+-  // Length
+   if (password.length >= 8) strength++;
+   if (password.length >= 12) strength++;
+ 
+-  // Variety
+   if (RegExp(r'[a-z]').hasMatch(password) &&
+       RegExp(r'[A-Z]').hasMatch(password)) {
+     strength++;
+   }
+   if (RegExp(r'\d').hasMatch(password)) strength++;
+-  if (RegExp(r'[!@#$%^&*()_+\-=\[\]{};\':"\\|,.<>\/?]').hasMatch(password)) {
++  if (RegExp(r'''[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]''').hasMatch(password)) {
+     strength++;
+   }
+ 

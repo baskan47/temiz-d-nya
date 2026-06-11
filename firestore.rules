@@ -1,0 +1,292 @@
+/**
+ * 🔒 Firestore Security Rules
+ * Temiz Dünya Project
+ * 
+ * Rules structure:
+ * - Users: Personal data protection
+ * - Groups: Group members only access
+ * - Reports: Location based + admin access
+ * - Photo Verifications: Admin only
+ * - Cleanup Sessions: User + group access
+ * - Notifications: Owner + admin access
+ */
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ==================== USERS ====================
+    // User profiles - encrypted personal data
+    match /users/{userId} {
+      // User can read/write own document
+      allow read, write: if request.auth.uid == userId;
+      
+      // Admin can read all users
+      allow read: if request.auth.uid != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      
+      // New user document validation
+      allow create: if request.auth.uid == userId &&
+        request.resource.data.keys().hasAll(['email', 'role']) &&
+        request.resource.data.role in ['volunteer', 'admin', 'municipality'] &&
+        request.resource.data.email == request.auth.token.email;
+      
+      // User can update their own fields (excluding role/verified)
+      allow update: if request.auth.uid == userId &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'verified']);
+      
+      // Admin can verify users
+      allow update: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['verified', 'verifiedAt']);
+    }
+    
+    // Public user profiles (read-only for leaderboard)
+    match /users/{userId}/public {
+      allow read: if true;
+    }
+    
+    // ==================== GROUPS ====================
+    match /groups/{groupId} {
+      // Allow authenticated users to read public groups
+      allow read: if request.auth.uid != null;
+      
+      // Group creator/admin can modify
+      allow write: if request.auth.uid == resource.data.createdBy ||
+        request.auth.uid in resource.data.members;
+      
+      // Create new group
+      allow create: if request.auth.uid != null &&
+        request.resource.data.createdBy == request.auth.uid &&
+        request.resource.data.keys().hasAll(['createdBy', 'members', 'location']) &&
+        request.resource.data.members.hasAll([request.auth.uid]);
+      
+      // Group members can read
+      allow read: if request.auth.uid in resource.data.members;
+      
+      // Only members can update group
+      allow update: if request.auth.uid in resource.data.members;
+      
+      // Group tasks subcollection
+      match /tasks/{taskId} {
+        allow read: if request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.members;
+        allow create, update: if request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.members &&
+          request.resource.data.groupId == groupId;
+        allow delete: if request.auth.uid == get(/databases/$(database)/documents/groups/$(groupId)).data.createdBy;
+      }
+      
+      // Group members activity
+      match /activities/{activityId} {
+        allow read: if request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.members;
+        allow create: if request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.members;
+      }
+    }
+    
+    // ==================== REPORTS ====================
+    // Dirty area reports
+    match /reports/{reportId} {
+      // Authenticated users can read
+      allow read: if request.auth.uid != null;
+      
+      // User can create report (supports both old and new schema)
+      allow create: if request.auth.uid != null &&
+        (
+          (request.resource.data.createdBy == request.auth.uid && request.resource.data.keys().hasAll(['location', 'area', 'description']))
+          ||
+          (request.resource.data.userId == request.auth.uid && request.resource.data.keys().hasAll(['latitude', 'longitude', 'description']))
+        );
+      
+      // Creator and admin can update
+      allow update: if request.auth.uid == resource.data.createdBy ||
+        request.auth.uid == resource.data.userId ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      
+      // Admin or creator can delete
+      allow delete: if request.auth.uid == resource.data.createdBy ||
+        request.auth.uid == resource.data.userId ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+
+      // Comments subcollection
+      match /comments/{commentId} {
+        allow read: if request.auth.uid != null;
+        allow create: if request.auth.uid != null && request.resource.data.userId == request.auth.uid;
+        allow update, delete: if request.auth.uid != null && (resource.data.userId == request.auth.uid || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+      }
+    }
+    
+    // ==================== PHOTOS & VERIFICATION ====================
+    // Photo upload metadata
+    match /photos/{photoId} {
+      allow read: if request.auth.uid != null;
+      
+      allow create: if request.auth.uid != null &&
+        request.resource.data.uploadedBy == request.auth.uid;
+      
+      allow delete: if request.auth.uid == resource.data.uploadedBy ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // Photo verification - ADMIN ONLY
+    match /photo_verifications/{verificationId} {
+      // Public read for verification status
+      allow read: if request.auth.uid != null &&
+        (request.auth.uid == resource.data.uploadedBy ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+      
+      // User can create verification
+      allow create: if request.auth.uid != null &&
+        request.resource.data.uploadedBy == request.auth.uid &&
+        request.resource.data.keys().hasAll(['photoUrl', 'description']);
+      
+      // Only admin can review/verify
+      allow update: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reviewedBy', 'reviewedAt', 'rejectReason']);
+    }
+    
+    // ==================== CLEANUP SESSIONS ====================
+    match /cleanup_sessions/{sessionId} {
+      // User and group members can read their sessions
+      allow read: if request.auth.uid != null &&
+        (request.auth.uid == resource.data.userId ||
+         request.auth.uid in resource.data.groupMembers ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+      
+      // Create cleanup session
+      allow create: if request.auth.uid != null &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.keys().hasAll(['userId', 'description', 'location']);
+      
+      // User and admin can update
+      allow update: if request.auth.uid == resource.data.userId ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // ==================== NOTIFICATIONS ====================
+    match /notifications/{notificationId} {
+      // User can read their own notifications
+      allow read: if request.auth.uid != null &&
+        (request.auth.uid == resource.data.userId ||
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+      
+      // System/admin can create notifications
+      allow create: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      
+      // User can mark as read
+      allow update: if request.auth.uid == resource.data.userId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'readAt']);
+    }
+    
+    // ==================== USER SCORES ====================
+    // Eco points and achievements
+    match /user_scores/{userId} {
+      allow read: if request.auth.uid != null;
+      
+      allow read: if request.auth.uid == userId;
+      
+      // Users can update their own non-numeric fields
+      allow update: if request.auth.uid == userId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['achievements', 'badges']);
+      
+      // Admin or system can update points
+      allow update: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // ==================== LEADERBOARD ====================
+    // Public leaderboard - aggregate data only
+    match /leaderboard/{entry} {
+      allow read: if true; // Public read
+      
+      allow write: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // ==================== ADMIN SETTINGS ====================
+    // Configuration and admin settings
+    match /admin_config/{docId} {
+      allow read: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      
+      allow write: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // ==================== LIVE OPERATIONS ====================
+    // Real-time cleanup operations
+    match /live_operations/{operationId} {
+      allow read: if request.auth.uid != null;
+      
+      allow create: if request.auth.uid != null &&
+        request.resource.data.createdBy == request.auth.uid;
+      
+      allow update: if request.auth.uid == resource.data.createdBy ||
+        request.auth.uid in resource.data.participantIds;
+      
+      allow delete: if request.auth.uid == resource.data.createdBy ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // ==================== ANALYTICS ====================
+    match /analytics/{docId} {
+      // Only admin can access analytics
+      allow read, write: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // ==================== ADMIN CONFIG ====================
+    // Scoring configuration - read by all, write by admin only
+    match /admin_config/{docId} {
+      // All authenticated users can read config
+      allow read: if request.auth.uid != null;
+      
+      // Only admin can write
+      allow write: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      
+      // History subcollection - admin only
+      match /history/{historyId} {
+        allow read: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+        allow create: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      }
+    }
+    
+    // Admin config history collection
+    match /admin_config_history/{docId} {
+      // Only admin can read and write
+      allow read, write: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // ==================== OTONOM CİHAZLAR VE PUANLAR ====================
+    
+    // OTONOM CİHAZLAR (Autonomous Devices)
+    match /autonomous_devices/{deviceId} {
+      // Tüm giriş yapmış kullanıcılar okuyabilir ve doluluk oranlarını güncelleyebilir
+      allow read: if request.auth.uid != null;
+      allow update: if request.auth.uid != null;
+      allow write: if request.auth.uid != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // PUAN İŞLEMLERİ (Point Transactions)
+    match /point_transactions/{transactionId} {
+      // Kullanıcılar kendi işlemlerini okuyabilir/oluşturabilir, admin hepsini görebilir
+      allow read: if request.auth.uid != null && (resource.data.user_id == request.auth.uid || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+      allow create: if request.auth.uid != null && request.resource.data.user_id == request.auth.uid;
+      allow update, delete: if request.auth.uid != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // ÖDÜL KATALOĞU (Rewards Catalog)
+    match /rewards_catalog/{rewardId} {
+      // Herkes okuyabilir, kullanıcılar stok miktarını güncelleyebilir (ödül alırken), admin tam yetkili
+      allow read: if request.auth.uid != null;
+      allow update: if request.auth.uid != null && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock']);
+      allow write: if request.auth.uid != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // ÖDÜL TALEPLERİ (Reward Redemptions)
+    match /reward_redemptions/{redemptionId} {
+      // Kullanıcılar kendi taleplerini okuyabilir/oluşturabilir, admin tam yetkili
+      allow read: if request.auth.uid != null && (resource.data.user_id == request.auth.uid || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+      allow create: if request.auth.uid != null && request.resource.data.user_id == request.auth.uid;
+      allow update, delete: if request.auth.uid != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // ==================== DEFAULT DENY ====================
+    // Default: deny all access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

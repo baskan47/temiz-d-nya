@@ -1,0 +1,287 @@
+/// 🖼️ Image Optimization Utilities for Flutter
+/// Compression, resizing, format conversion
+
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
+
+class ImageOptimization {
+  /// Compress and resize image
+  /// Returns optimized image as Uint8List
+  static Future<Uint8List> compressImage({
+    required File imageFile,
+    int maxWidth = 1200,
+    int maxHeight = 800,
+    int quality = 85,
+  }) async {
+    try {
+      // Read image
+      final bytes = await imageFile.readAsBytes();
+      img.Image? image = img.decodeImage(bytes);
+
+      if (image == null) {
+        throw Exception('Failed to decode image');
+      }
+
+      // Resize maintaining aspect ratio
+      img.Image resized = img.copyResize(
+        image,
+        width: maxWidth,
+        height: maxHeight,
+        interpolation: img.Interpolation.linear,
+      );
+
+      // Encode to JPEG with quality
+      Uint8List compressed = Uint8List.fromList(
+        img.encodeJpg(resized, quality: quality),
+      );
+
+      return compressed;
+    } catch (e) {
+      print('Image compression error: $e');
+      rethrow;
+    }
+  }
+
+  /// Create thumbnail from image
+  static Future<Uint8List> createThumbnail({
+    required File imageFile,
+    int size = 150,
+    int quality = 70,
+  }) async {
+    try {
+      final bytes = await imageFile.readAsBytes();
+      img.Image? image = img.decodeImage(bytes);
+
+      if (image == null) {
+        throw Exception('Failed to decode image');
+      }
+
+      // Crop to square
+      final minDim = image.width < image.height ? image.width : image.height;
+      final x = (image.width - minDim) ~/ 2;
+      final y = (image.height - minDim) ~/ 2;
+
+      img.Image cropped = img.copyCrop(
+        image,
+        x: x,
+        y: y,
+        width: minDim,
+        height: minDim,
+      );
+
+      // Resize to thumbnail size
+      img.Image thumbnail = img.copyResize(
+        cropped,
+        width: size,
+        height: size,
+        interpolation: img.Interpolation.linear,
+      );
+
+      Uint8List compressed = Uint8List.fromList(
+        img.encodeJpg(thumbnail, quality: quality),
+      );
+
+      return compressed;
+    } catch (e) {
+      print('Thumbnail creation error: $e');
+      rethrow;
+    }
+  }
+
+  /// Save compressed image to file
+  static Future<File> saveCompressedImage({
+    required Uint8List imageBytes,
+    required String fileName,
+  }) async {
+    try {
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/$fileName');
+      await file.writeAsBytes(imageBytes);
+      return file;
+    } catch (e) {
+      print('Save compressed image error: $e');
+      rethrow;
+    }
+  }
+
+  /// Get image metadata
+  static Future<ImageMetadata> getImageMetadata(File imageFile) async {
+    try {
+      final bytes = await imageFile.readAsBytes();
+      img.Image? image = img.decodeImage(bytes);
+
+      if (image == null) {
+        throw Exception('Failed to decode image');
+      }
+
+      return ImageMetadata(
+        fileName: imageFile.path.split('/').last,
+        fileSizeBytes: bytes.length,
+        fileSizeMB: bytes.length / (1024 * 1024),
+        width: image.width,
+        height: image.height,
+        format: _getImageFormat(imageFile),
+      );
+    } catch (e) {
+      print('Get image metadata error: $e');
+      rethrow;
+    }
+  }
+
+  /// Validate image file
+  static Future<List<String>> validateImageFile({
+    required File imageFile,
+    int maxSizeMB = 10,
+    int minWidth = 100,
+    int minHeight = 100,
+  }) async {
+    final errors = <String>[];
+
+    try {
+      // Check file exists
+      if (!await imageFile.exists()) {
+        errors.add('Dosya bulunamadı');
+        return errors;
+      }
+
+      // Check file size
+      final fileSizeBytes = await imageFile.length();
+      final fileSizeMB = fileSizeBytes / (1024 * 1024);
+
+      if (fileSizeMB > maxSizeMB) {
+        errors.add(
+          'Dosya çok büyük. Max: ${maxSizeMB}MB, Aktual: ${fileSizeMB.toStringAsFixed(2)}MB',
+        );
+      }
+
+      // Check image dimensions
+      final bytes = await imageFile.readAsBytes();
+      img.Image? image = img.decodeImage(bytes);
+
+      if (image == null) {
+        errors.add('Geçersiz resim formatı');
+        return errors;
+      }
+
+      if (image.width < minWidth || image.height < minHeight) {
+        errors.add(
+          'Resim çok küçük. Min: ${minWidth}x${minHeight}, Aktual: ${image.width}x${image.height}',
+        );
+      }
+
+      return errors;
+    } catch (e) {
+      errors.add('Resim doğrulama hatası: $e');
+      return errors;
+    }
+  }
+
+  /// Format file size for display
+  static String formatFileSize(double bytes) {
+    if (bytes <= 0) return '0 Bytes';
+
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    final i = (bytes.toString().length - bytes.toString().replaceAll('.', '').length == 0)
+        ? 0
+        : ((bytes.log() / k.log()).floor()).toInt();
+
+    return '${(bytes / pow(k, i)).toStringAsFixed(2)} ${sizes[i]}';
+  }
+
+  /// Get image format from file
+  static String _getImageFormat(File file) {
+    final ext = file.path.split('.').last.toLowerCase();
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        return 'JPEG';
+      case 'png':
+        return 'PNG';
+      case 'webp':
+        return 'WebP';
+      case 'gif':
+        return 'GIF';
+      default:
+        return 'Unknown';
+    }
+  }
+}
+
+/// 📊 Image Metadata Model
+class ImageMetadata {
+  final String fileName;
+  final int fileSizeBytes;
+  final double fileSizeMB;
+  final int width;
+  final int height;
+  final String format;
+
+  ImageMetadata({
+    required this.fileName,
+    required this.fileSizeBytes,
+    required this.fileSizeMB,
+    required this.width,
+    required this.height,
+    required this.format,
+  });
+
+  String get dimensions => '${width}x${height}px';
+  String get formattedSize => ImageOptimization.formatFileSize(fileSizeBytes.toDouble());
+
+  @override
+  String toString() {
+    return 'ImageMetadata(file: $fileName, size: $formattedSize, dimensions: $dimensions, format: $format)';
+  }
+}
+
+/// 📊 Compression Report
+class CompressionReport {
+  final int originalSizeBytes;
+  final int compressedSizeBytes;
+  final int compressionPercentage;
+  final Duration processingTime;
+
+  CompressionReport({
+    required this.originalSizeBytes,
+    required this.compressedSizeBytes,
+    required this.processingTime,
+  }) : compressionPercentage = ((1 - compressedSizeBytes / originalSizeBytes) * 100).toInt();
+
+  String get originalFormatted => ImageOptimization.formatFileSize(originalSizeBytes.toDouble());
+  String get compressedFormatted => ImageOptimization.formatFileSize(compressedSizeBytes.toDouble());
+  String get savedFormatted => ImageOptimization.formatFileSize((originalSizeBytes - compressedSizeBytes).toDouble());
+
+  @override
+  String toString() {
+    return '''
+CompressionReport(
+  Original: $originalFormatted
+  Compressed: $compressedFormatted
+  Saved: $savedFormatted ($compressionPercentage%)
+  Time: ${processingTime.inMilliseconds}ms
+)''';
+  }
+}
+
+extension on num {
+  num log() => double.parse(this.toString()).log();
+}
+
+extension on double {
+  double log() {
+    return log() / ln10;
+  }
+
+  static double get ln10 => 2.302585092994046;
+}
+
+double pow(double base, int exponent) {
+  double result = 1;
+  for (int i = 0; i < exponent; i++) {
+    result *= base;
+  }
+  return result;
+}

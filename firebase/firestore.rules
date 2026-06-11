@@ -1,0 +1,92 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Yardımcı fonksiyonlar
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+    
+    function isModerator() {
+      // Custom claims veya veritabanındaki güven skoru üzerinden kontrol
+      // Not: Güvenliği artırmak için Cloud Function üzerinden custom claim atanması önerilir.
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.trust_score >= 90;
+    }
+
+    // USERS Koleksiyonu
+    match /users/{userId} {
+      // Herkes kendi profilini okuyabilir, diğerleri genel bilgileri okuyabilir
+      allow read: if isAuthenticated();
+      
+      // Kullanıcı oluşturulurken başlangıç değerlerini zorla
+      allow create: if isOwner(userId)
+                    && request.resource.data.trust_score == 50
+                    && request.resource.data.total_reports == 0
+                    && request.resource.data.verified_cleanups == 0;
+                    
+      // Kullanıcı kendi profilini güncelleyebilir AMA güven skoru ve rank sadece sunucu (Admin) tarafından güncellenebilir
+      allow update: if isOwner(userId) 
+                    && request.resource.data.trust_score == resource.data.trust_score
+                    && request.resource.data.rank_title == resource.data.rank_title;
+    }
+
+    // REPORTS (Bildirimler) Koleksiyonu
+    match /reports/{reportId} {
+      // Doğrulanmış raporları herkes okuyabilir
+      allow read: if isAuthenticated();
+      
+      // Rapor oluşturma
+      allow create: if isAuthenticated()
+                    && request.resource.data.reporter_id == request.auth.uid
+                    && request.resource.data.status == 'pending_analysis'; // İlk yaratılışta analiz beklenir
+                    
+      // Rapor güncelleme (Moderatör Onayı)
+      allow update: if isAuthenticated() 
+                    && isModerator()
+                    && resource.data.status == 'pending_review'
+                    && (request.resource.data.status == 'verified' || request.resource.data.status == 'rejected');
+                    
+      allow delete: if false; // Raporlar silinmez, durumu rejected yapılır
+    }
+
+    // ==================== OTONOM CİHAZLAR VE PUANLAR ====================
+    
+    // OTONOM CİHAZLAR (Autonomous Devices)
+    match /autonomous_devices/{deviceId} {
+      // Tüm giriş yapmış kullanıcılar okuyabilir ve doluluk oranlarını güncelleyebilir
+      allow read: if isAuthenticated();
+      allow update: if isAuthenticated();
+      allow write: if isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // PUAN İŞLEMLERİ (Point Transactions)
+    match /point_transactions/{transactionId} {
+      // Kullanıcılar kendi işlemlerini okuyabilir/oluşturabilir, admin hepsini görebilir
+      allow read: if isAuthenticated() && (resource.data.user_id == request.auth.uid || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+      allow create: if isAuthenticated() && request.resource.data.user_id == request.auth.uid;
+      allow update, delete: if isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // ÖDÜL KATALOĞU (Rewards Catalog)
+    match /rewards_catalog/{rewardId} {
+      // Herkes okuyabilir, kullanıcılar stok miktarını güncelleyebilir (ödül alırken), admin tam yetkili
+      allow read: if isAuthenticated();
+      allow update: if isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stock']);
+      allow write: if isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // ÖDÜL TALEPLERİ (Reward Redemptions)
+    match /reward_redemptions/{redemptionId} {
+      // Kullanıcılar kendi taleplerini okuyabilir/oluşturabilir, admin tam yetkili
+      allow read: if isAuthenticated() && (resource.data.user_id == request.auth.uid || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+      allow create: if isAuthenticated() && request.resource.data.user_id == request.auth.uid;
+      allow update, delete: if isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+  }
+}

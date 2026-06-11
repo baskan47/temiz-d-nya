@@ -1,0 +1,40 @@
+# IDEs and Editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# System Files
+.DS_Store
+Thumbs.db
+
+# Large ZIP and archives
+*.zip
+*.rar
+*.tar.gz
+*.7z
+
+# Node / Web dependencies & build outputs
+node_modules/
+dist/
+build/
+.env
+.env.local
+.env.*.local
+
+# Flutter specific ignores
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+**/build/
+**/ios/.symlinks/
+**/ios/Pods/
+**/ios/Podfile.lock
+**/android/.gradle/
+**/android/local.properties
+**/android/key.properties
+**/android/app/local.properties

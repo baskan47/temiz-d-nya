@@ -1,0 +1,624 @@
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'theme.dart';
+
+// Default Configuration
+const Map<String, dynamic> DEFAULT_CONFIG = {
+  'scoreFactors': {
+    'WEIGHT': 0.30,
+    'DIFFICULTY': 0.20,
+    'URGENCY': 0.15,
+    'EFFICIENCY': 0.20,
+    'VERIFICATION': 0.10,
+    'TIME': 0.05,
+  },
+  'bonusMultipliers': {
+    'leaderboardTop10': 1.20,
+    'leaderboardTop50': 1.10,
+    'leaderboardTop100': 1.05,
+    'streakMultiplier': 1.02,
+    'teamEfficiencyBonus': {
+      'solo': 1.0,
+      'small': 1.10,
+      'medium': 1.20,
+      'large': 1.30,
+    },
+  },
+  'achievements': {
+    'firstCleanup': 10,
+    'tenCleanups': 50,
+    'fiftyCleanups': 100,
+    'hundredCleanups': 200,
+    'teamLeader': 150,
+    'photoVerified': 25,
+    'efficiencyMaster': 75,
+    'consistencyWeek': 30,
+    'consistencyMonth': 60,
+    'highDifficulty': 50,
+  },
+  'badgeThresholds': {
+    'bronze': 0,
+    'silver': 500,
+    'gold': 1000,
+    'platinum': 2000,
+  },
+  'levelThresholds': {
+    'novice': 0,
+    'beginner': 100,
+    'intermediate': 500,
+    'pro': 1000,
+    'expert': 2000,
+    'master': 5000,
+  },;
+};
+
+class AdminScoringScreen extends StatefulWidget {
+  const AdminScoringScreen({Key? key}) : super(key: key)
+
+  @override
+  _AdminScoringScreenState createState() => _AdminScoringScreenState();
+}
+
+class _AdminScoringScreenState extends State<AdminScoringScreen> {
+  late FirebaseFirestore _db;
+  late Map<String, dynamic> _config;
+  bool _loading = true;
+  bool _saving = false;
+  String _message = '';
+  int _activeTab = 0;
+  List<Map<String, dynamic>> _history = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _db = FirebaseFirestore.instance;
+    _loadConfig();
+  }
+
+  Future<void> _loadConfig() async {
+    try {
+      final doc = await _db.collection('admin_config').doc('scoring').get();
+      
+      setState(() {
+        _config = doc.exists ? (doc.data() ?? DEFAULT_CONFIG as Map<String, dynamic>) : DEFAULT_CONFIG as Map<String, dynamic>;
+        _loading = false;
+      })
+
+      _loadHistory();
+    } catch (e) {
+      setState(() {
+        _loading = false;
+        _message = 'Hata: ${e.toString()}';
+      })
+    }
+  }
+
+  Future<void> _loadHistory() async {
+    try {
+      final snap = await _db
+          .collection('admin_config_history')
+          .orderBy('timestamp', descending: true)
+          .limit(50)
+          .get();
+
+      setState(() {
+        _history = snap.docs.map((doc) => doc.data()).toList();
+      })
+    } catch (e) {
+      print('Geçmiş yükleme hatası: $e');
+    }
+  }
+
+  Future<void> _saveConfig() async {
+    try {
+      setState(() => _saving = true);
+
+      await _db.collection('admin_config').doc('scoring').set({
+        ..._config,
+        'lastUpdated': FieldValue.serverTimestamp(),
+        'updatedBy': 'admin',;
+      })
+
+      // Geçmişe ekle
+      await _db.collection('admin_config_history').add({
+        'timestamp': FieldValue.serverTimestamp(),
+        'changedBy': 'admin',
+        'changes': _config.toString(),
+        'config': _config,;
+      })
+
+      setState(() {
+        _message = '✅ Konfigürasyon kaydedildi';
+        _saving = false;
+      })
+
+      Future.delayed(Duration(seconds: 3), () {
+        setState(() => _message = '');
+      })
+
+      _loadHistory();
+    } catch (e) {
+      setState(() {
+        _message = '❌ Hata: ${e.toString()}';
+        _saving = false;
+      })
+    }
+  }
+
+  Future<void> _resetToDefaults() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Sıfırla'),
+        content: Text('Tüm ayarları varsayılana sıfırlamak istediğinizden emin misiniz?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text('İptal')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('Evet'),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+          ),
+        ],
+      ),;
+    )
+
+    if (confirm == true) {
+      setState(() => _config = Map<String, dynamic>.from(DEFAULT_CONFIG));
+      await _saveConfig();
+    }
+  }
+
+  void _updateFactor(String key, double value) {
+    setState(() {
+      (_config['scoreFactors'] as Map)[key] = value;
+    })
+  }
+
+  void _updateBonus(String path, double value) {
+    final parts = path.split('.');
+    setState(() {
+      if (parts.length == 1) {
+        (_config['bonusMultipliers'] as Map)[parts[0]] = value;
+      } else {
+        final subMap = ((_config['bonusMultipliers'] as Map)[parts[0]]) as Map;
+        subMap[parts[1]] = value;
+      };
+    })
+  }
+
+  void _updateAchievement(String key, int value) {
+    setState(() {
+      (_config['achievements'] as Map)[key] = value;
+    })
+  }
+
+  void _updateThreshold(String type, String key, int value) {
+    setState(() {
+      (_config[type] as Map)[key] = value;
+    })
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return Scaffold(
+        appBar: AppBar(title: Text('⚙️ Scoring Ayarları')),
+        body: Center(child: CircularProgressIndicator()),;
+      )
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('⚙️ Scoring Ayarları'),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.restore),
+            onPressed: _saving ? null : _resetToDefaults,
+            tooltip: 'Sıfırla',
+          ),
+          SizedBox(width: 8),
+          IconButton(
+            icon: Icon(Icons.save),
+            onPressed: _saving ? null : _saveConfig,
+            tooltip: 'Kaydet',
+          ),
+        ],
+      ),
+      body: ListView(
+        children: [
+          if (_message.isNotEmpty)
+            Container(
+              color: _message.contains('✅') ? Colors.green[50] : Colors.red[50],
+              padding: EdgeInsets.all(12),
+              child: Text(
+                _message,
+                style: TextStyle(
+                  color: _message.contains('✅') ? Colors.green[700] : Colors.red[700],
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          Padding(
+            padding: EdgeInsets.all(16),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _TabButton('📊 Faktörler', 0),
+                  _TabButton('🎁 Bonuslar', 1),
+                  _TabButton('🏆 Başarılar', 2),
+                  _TabButton('📈 Eşikler', 3),
+                  _TabButton('📜 Geçmiş', 4),
+                ].map((btn) => btn.build(context, _activeTab, (i) => setState(() => _activeTab = i))).toList(),
+              ),
+            ),
+          ),
+          Padding(
+            padding: EdgeInsets.all(16),
+            child: _buildTabContent(),
+          ),
+        ],
+      ),;
+    )
+  }
+
+  Widget _buildTabContent() {
+    switch (_activeTab) {
+      case 0:
+        return _buildFactorsTab();
+      case 1:
+        return _buildBonusesTab();
+      case 2:
+        return _buildAchievementsTab();
+      case 3:
+        return _buildThresholdsTab();
+      case 4:
+        return _buildHistoryTab();
+      default:
+        return SizedBox();
+    }
+  }
+
+  Widget _buildFactorsTab() {
+    final factors = _config['scoreFactors'] as Map<String, dynamic>;
+    final total = factors.values.fold<double>(0, (sum, val) => sum + (val as num).toDouble());
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Puan Faktörleri (Ağırlıkları)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        SizedBox(height: 16),
+        ...factors.entries.map((entry) => _SliderInput(
+          label: _getFactorLabel(entry.key),
+          value: entry.value as double,
+          onChange: (v) => _updateFactor(entry.key, v),
+          min: 0,
+          max: 1,
+          divisions: 100,
+        )),
+        SizedBox(height: 16),
+        Container(
+          padding: EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.grey[100],
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Toplam: ${total.toStringAsFixed(2)}', style: TextStyle(fontWeight: FontWeight.bold)),
+              if ((total - 1.0).abs() > 0.01)
+                Text(
+                  '⚠️ Toplam 1.0 olmalı',
+                  style: TextStyle(color: Colors.orange[700], fontSize: 12),
+                ),
+            ],
+          ),
+        ),
+      ],;
+    )
+  }
+
+  Widget _buildBonusesTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Bonus Çarpanları', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        SizedBox(height: 16),
+        Text('🏆 Liderlik Tahtası Bonusları', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+        SizedBox(height: 12),
+        _SliderInput(
+          label: 'Top 10 Çarpanı',
+          value: (_config['bonusMultipliers']['leaderboardTop10'] as num).toDouble(),
+          onChange: (v) => _updateBonus('leaderboardTop10', v),
+          min: 1.0,
+          max: 2.0,
+          divisions: 100,
+        ),
+        _SliderInput(
+          label: 'Top 50 Çarpanı',
+          value: (_config['bonusMultipliers']['leaderboardTop50'] as num).toDouble(),
+          onChange: (v) => _updateBonus('leaderboardTop50', v),
+          min: 1.0,
+          max: 1.5,
+          divisions: 50,
+        ),
+        _SliderInput(
+          label: 'Top 100 Çarpanı',
+          value: (_config['bonusMultipliers']['leaderboardTop100'] as num).toDouble(),
+          onChange: (v) => _updateBonus('leaderboardTop100', v),
+          min: 1.0,
+          max: 1.2,
+          divisions: 20,
+        ),
+        _SliderInput(
+          label: 'Çizgi Bonusu Çarpanı',
+          value: (_config['bonusMultipliers']['streakMultiplier'] as num).toDouble(),
+          onChange: (v) => _updateBonus('streakMultiplier', v),
+          min: 1.0,
+          max: 1.1,
+          divisions: 100,
+        ),
+        SizedBox(height: 24),
+        Text('👥 Takım Verimliliği Bonusları', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+        SizedBox(height: 12),
+        ...[
+          ('solo', 'Solo (1 kişi)', 1.0, 1.0),
+          ('small', 'Küçük Takım (2-3 kişi)', 1.0, 1.3),
+          ('medium', 'Orta Takım (4-5 kişi)', 1.0, 1.4),
+          ('large', 'Büyük Takım (6+ kişi)', 1.0, 1.5),
+        ]
+            .map((t) => _SliderInput(
+              label: t.$2,
+              value: ((_config['bonusMultipliers']['teamEfficiencyBonus'] as Map)[t.$1] as num).toDouble(),
+              onChange: (v) => _updateBonus('teamEfficiencyBonus.${t.$1}', v),
+              min: t.$3,
+              max: t.$4,
+              divisions: 100,
+            ))
+            .toList(),
+      ],;
+    )
+  }
+
+  Widget _buildAchievementsTab() {
+    final achievements = _config['achievements'] as Map<String, dynamic>;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Başarı Puanları', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        SizedBox(height: 16),
+        ...achievements.entries
+            .map((entry) => _NumberInput(
+              label: entry.key.replaceAll('_', ' ').toUpperCase(),
+              value: entry.value as int,
+              onChange: (v) => _updateAchievement(entry.key, v),
+            ))
+            .toList(),
+      ],;
+    )
+  }
+
+  Widget _buildThresholdsTab() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('İlerleme Eşikleri', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        SizedBox(height: 16),
+        Text('🏅 Badge Eşikleri', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+        SizedBox(height: 12),
+        ...(_config['badgeThresholds'] as Map<String, dynamic>)
+            .entries
+            .map((entry) => _NumberInput(
+              label: entry.key.toUpperCase() + ' Badge',
+              value: entry.value as int,
+              onChange: (v) => _updateThreshold('badgeThresholds', entry.key, v),
+            ))
+            .toList(),
+        SizedBox(height: 24),
+        Text('⭐ Level Eşikleri', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+        SizedBox(height: 12),
+        ...(_config['levelThresholds'] as Map<String, dynamic>)
+            .entries
+            .map((entry) => _NumberInput(
+              label: entry.key.toUpperCase() + ' Level',
+              value: entry.value as int,
+              onChange: (v) => _updateThreshold('levelThresholds', entry.key, v),
+            ))
+            .toList(),
+      ],;
+    )
+  }
+
+  Widget _buildHistoryTab() {
+    if (_history.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Text('Henüz değişiklik geçmişi yok', style: TextStyle(color: Colors.grey)),
+        ),;
+      )
+    }
+
+    return ListView.builder(
+      shrinkWrap: true,
+      physics: NeverScrollableScrollPhysics(),
+      itemCount: _history.length,
+      itemBuilder: (ctx, i) {
+        final entry = _history[i];
+        final timestamp = (entry['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now();
+
+        return Card(
+          margin: EdgeInsets.only(bottom: 12),
+          child: Padding(
+            padding: EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(entry['changedBy'] ?? 'admin', style: TextStyle(fontWeight: FontWeight.bold)),
+                SizedBox(height: 4),
+                Text(
+                  timestamp.toString().substring(0, 16),
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+                SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  padding: EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    (entry['changes'] as String?)?.substring(0, 200) ?? 'Değişiklik detayı',
+                    style: TextStyle(fontSize: 12, fontFamily: 'monospace'),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),;
+        )
+      },;
+    )
+  }
+
+  String _getFactorLabel(String key) {
+    switch (key) {
+      case 'WEIGHT':
+        return '🏋️ Ağırlık';
+      case 'DIFFICULTY':
+        return '💪 Zorluk';
+      case 'URGENCY':
+        return '⏰ Aciliyet';
+      case 'EFFICIENCY':
+        return '👥 Verimlilik';
+      case 'VERIFICATION':
+        return '✅ Doğrulama';
+      case 'TIME':
+        return '⏱️ Zaman';
+      default:
+        return key;
+    }
+  }
+}
+
+class _TabButton extends StatelessWidget {
+  final String label;
+  final int index;
+
+  _TabButton(this.label, this.index)
+
+  @override
+  Widget build(BuildContext context, int activeTab, Function(int) onTap) {
+    final isActive = activeTab == index;
+    return Padding(
+      padding: EdgeInsets.only(right: 8),
+      child: GestureDetector(
+        onTap: () => onTap(index),
+        child: Container(
+          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: isActive ? theme.colors.primary : Colors.grey[200],
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: isActive ? Colors.white : Colors.black,
+              fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        ),
+      ),;
+    )
+  }
+}
+
+class _SliderInput extends StatelessWidget {
+  final String label;
+  final double value;
+  final Function(double) onChange;
+  final double min;
+  final double max;
+  final int divisions;
+
+  _SliderInput({
+    required this.label,
+    required this.value,
+    required this.onChange,
+    this.min = 0,
+    this.max = 1,
+    this.divisions = 100,
+  })
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(label, style: TextStyle(fontWeight: FontWeight.w600)),
+            Text(value.toStringAsFixed(2), style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ],
+        ),
+        Slider(
+          value: value,
+          onChanged: onChange,
+          min: min,
+          max: max,
+          divisions: divisions,
+        ),
+        SizedBox(height: 8),
+      ],;
+    )
+  }
+}
+
+class _NumberInput extends StatelessWidget {
+  final String label;
+  final int value;
+  final Function(int) onChange;
+
+  _NumberInput({required this.label, required this.value, required this.onChange})
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: TextStyle(fontWeight: FontWeight.w600)),
+        SizedBox(height: 4),
+        Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.grey),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  keyboardType: TextInputType.number,
+                  controller: TextEditingController(text: value.toString()),
+                  onChanged: (v) {
+                    final num = int.tryParse(v) ?? 0;
+                    onChange(num);
+                  },
+                  decoration: InputDecoration(
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: 12),
+      ],;
+    )
+  }
+}
